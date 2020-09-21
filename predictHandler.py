@@ -16,11 +16,8 @@ import numpy as np
 
 import torch
 from torch.utils.data import Dataset, SequentialSampler
-from utils_fea import read_examples_from_file, convert_examples_to_features
+from utils_fea import read_examples_from_file, convert_examples_to_features, parsepdf4predict, write2txt
 
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"                                                                             
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 class pdfPredDataset(Dataset):
     def __init__(self, args, tokenizer,data_dir):
@@ -77,6 +74,7 @@ class TablePredictHandler():
         self.modelconfig = json.load(open(os.path.join(model_save_path, 'layoutLM_config.json'), 'r', encoding='utf-8'))
         self.config = Namespace(**self.modelconfig)
         # super(TablePredictHandler, self).__init__(self.config)
+        self.model_save_path = model_save_path
         
         self.pretrainmodelpath = self.config.pretrainmodelpath
         self.loadmodel(model_save_path)
@@ -91,14 +89,16 @@ class TablePredictHandler():
         self.model = LayoutlmForTokenClassification.from_pretrained(model_save_path,config=self.model_config)
         
         
-    def predict(self, data_dir):
-        eval_dataset = pdfPredDataset(self.config, self.tokenizer, data_dir)
-        # eval_sampler = SequentialSampler(eval_dataset)
+    def predict(self, pdf_file):
+        
+        #step1 parse pdf data for predict
+        xlsxdf, txtdata = parsepdf4predict(pdf_file)
+        write2txt(self.model_save_path, txtdata)
+        
+        eval_dataset = pdfPredDataset(self.config, self.tokenizer, self.model_save_path)
         eval_dataloader = DataLoader(
                                         eval_dataset,
-                                        # sampler=eval_sampler,
                                         batch_size=8,
-                                        # collate_fn=None,
                                     )
         
         print("***** Running evaluation %s *****", 'test')
@@ -137,9 +137,8 @@ class TablePredictHandler():
             for j in range(preds.shape[1]):
                 if preds[i, j] != self.config.pad_token_label_id:
                     preds_list[i].append(label_map[preds[i][j]])
-    
-    
-        return preds_list
+        xlsxdf['pred_label'] = preds_list
+        return xlsxdf
 
 
 

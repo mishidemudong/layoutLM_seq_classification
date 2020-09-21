@@ -6,6 +6,13 @@ Created on Mon Sep 14 09:28:50 2020
 @author: liang
 """
 import os
+from tqdm import tqdm
+import pdfplumber
+from tqdm import tqdm
+from pdfminer.layout import LTChar, LTLine
+import pandas as pd
+from collections import Counter
+import re
 
 class InputExample(object):
     """A single training/test example for token classification."""
@@ -104,8 +111,8 @@ def read_examples_from_file(data_dir, mode):
                 assert len(isplits) == 4
                 assert splits[0] == bsplits[0]
                 words.append(splits[0])
-                if len(splits) > 1:
-                    labels.append(splits[-1].replace("\n", ""))
+                if len(splits) >= 1:
+                    labels.append("O")
                     box = bsplits[-1].replace("\n", "")
                     box = [int(b) for b in box.split()]
                     boxes.append(box)
@@ -348,3 +355,163 @@ def convert_examples_to_features(
             )
         )
     return features
+
+def bbox_string(box, width, length, num=1000):
+    return (
+        str(int(num * (box[0] / width)))
+        + " "
+        + str(int(num * (box[1] / length)))
+        + " "
+        + str(int(num * (box[2] / width)))
+        + " "
+        + str(int(num * (box[3] / length)))
+    )
+
+def actual_bbox_string(box, width, length):
+    return (
+        str(box[0])
+        + " "
+        + str(box[1])
+        + " "
+        + str(box[2])
+        + " "
+        + str(box[3])
+        + "\t"
+        + str(width)
+        + " "
+        + str(length)
+    )
+
+def within_bbox(bbox_bound, bbox_in):
+    assert bbox_bound[0] <= bbox_bound[2]
+    assert bbox_bound[1] <= bbox_bound[3]
+    assert bbox_in[0] <= bbox_in[2]
+    assert bbox_in[1] <= bbox_in[3]
+
+    x_left = max(bbox_bound[0], bbox_in[0])
+    y_top = max(bbox_bound[1], bbox_in[1])
+    x_right = min(bbox_bound[2], bbox_in[2])
+    y_bottom = min(bbox_bound[3], bbox_in[3])
+
+    if x_right < x_left or y_bottom < y_top:
+        return False
+
+    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+    bbox_in_area = (bbox_in[2] - bbox_in[0]) * (bbox_in[3] - bbox_in[1])
+
+    if bbox_in_area == 0:
+        return False
+
+    iou = intersection_area / float(bbox_in_area)
+
+    return iou > 0.95
+
+page_seg = "############"
+def parsepdf4predict(pdf_file):
+    # pdf_files = list(os.listdir(data_dir))#[:10]
+    # pdf_files = [t for t in pdf_files if t.endswith('.pdf')]
+    
+    token_array = []
+    x0_array = []
+    y0_array = []
+    x1_array = []
+    y1_array = []
+    w_array = []
+    h_array = []
+
+    xlsx = pd.ExcelWriter(pdf_file.replace('.pdf','.xlsx'))
+    
+    pdf = pdfplumber.open(pdf_file)
+
+    for page_id in tqdm(range(len(pdf.pages))):
+
+        this_page = pdf.pages[page_id]
+    
+        words = this_page.extract_words(x_tolerance=1.5)
+    
+        lines = []
+        for obj in this_page.layout._objs:
+            if not isinstance(obj, LTLine):
+                continue
+            lines.append(obj)
+    
+        for word in words:
+            word_bbox = (float(word['x0']), float(word['top']), float(word['x1']), float(word['bottom']))
+            objs = []
+            for obj in this_page.layout._objs:
+                if not isinstance(obj, LTChar):
+                    continue
+                obj_bbox = (obj.bbox[0], float(this_page.height) - obj.bbox[3],
+                            obj.bbox[2], float(this_page.height) - obj.bbox[1])
+                if within_bbox(word_bbox, obj_bbox):
+                    objs.append(obj)
+            fontname = []
+            for obj in objs:
+                fontname.append(obj.fontname)
+            if len(fontname) != 0:
+                c = Counter(fontname)
+                fontname, _ = c.most_common(1)[0]
+            else:
+                fontname = 'default'
+    
+            # format word_bbox
+            width = int(this_page.width)
+            height = int(this_page.height)
+            x0 = word_bbox[0]
+            y0 = word_bbox[1]
+            x1 = word_bbox[2]
+            y1 = word_bbox[3]
+    
+            word_text = re.sub(r"\s+", "", word['text'])
+    
+            token_array.append(word_text)
+            x0_array.append(x0)
+            y0_array.append(y0)
+            x1_array.append(x1)
+            y1_array.append(y1)
+            w_array.append(width)
+            h_array.append(height)
+            
+        union_array = list(zip(token_array,x0_array,y0_array,x1_array,y1_array,w_array,h_array))     
+        pagedf = pd.DataFrame(union_array,columns=['token','x0','y0','x1','y1','width' , 'height'])
+        
+        pagedf.to_excel(xlsx, sheet_name=page_id, index=False)
+            
+        token_array.append(page_seg)
+        x0_array.append(page_seg)
+        y0_array.append(page_seg)
+        x1_array.append(page_seg)
+        y1_array.append(page_seg)
+        w_array.append(page_seg)
+        h_array.append(page_seg)
+           
+    return xlsx, (token_array,x0_array,y0_array,x1_array,y1_array,w_array,h_array)
+        
+        
+def write2txt(output_dir,txtdata):
+    #############write2txt
+    token_array,x0_array,y0_array,x1_array,y1_array,w_array,h_array = txtdata[0],txtdata[1],txtdata[2],txtdata[3],txtdata[4],txtdata[5],txtdata[6]
+    data_name = 'test'
+    with open(
+        os.path.join(output_dir, data_name + ".txt"),
+        "w",
+        encoding="utf8",
+    ) as fw, open(
+        os.path.join(output_dir, data_name + "_box.txt"),
+        "w",
+        encoding="utf8",
+    ) as fbw, open(
+        os.path.join(output_dir, data_name + "_image.txt"),
+        "w",
+        encoding="utf8",
+    ) as fiw:
+        
+        for token,x0,y0,x1,y1,w,h in zip(token_array,x0_array,y0_array,x1_array,y1_array,w_array,h_array):
+            if token == page_seg:
+                fw.write('\n')
+                fbw.write('\n')
+                fiw.write('\n')
+            else:
+                fw.write(token + '\n')
+                fbw.write(token + '\t'+ bbox_string([x0,y0,x1,y1], w, h) + '\n')
+                fiw.write(token + '\t'+ actual_bbox_string([x0,y0,x1,y1], w, h)  + '\n')
