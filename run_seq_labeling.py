@@ -50,14 +50,15 @@ from transformers import (
 )
 
 from layoutlm import FunsdDataset, LayoutlmConfig, LayoutlmForTokenClassification
+from layoutlm_crf import LayoutlmForCRF
 # from args import createparser
 from args_funsd import createparser
-import os
+
 import json
 
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"                                                                             
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+# os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
 args = createparser()
@@ -75,6 +76,7 @@ MODEL_CLASSES = {
     "bert": (BertConfig, BertForTokenClassification, BertTokenizer),
     "roberta": (RobertaConfig, RobertaForTokenClassification, RobertaTokenizer),
     "layoutlm": (LayoutlmConfig, LayoutlmForTokenClassification, BertTokenizer),
+    "layoutlmcrf":(LayoutlmConfig, LayoutlmForCRF, BertTokenizer)
 }
 
 
@@ -204,6 +206,7 @@ def train(  # noqa C901
 
     global_step = 0
     tr_loss, logging_loss = 0.0, 0.0
+    best_f1 = 0.0
     model.zero_grad()
     train_iterator = trange(
         int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0]
@@ -213,6 +216,7 @@ def train(  # noqa C901
         epoch_iterator = tqdm(
             train_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0]
         )
+        # print("***************", train_dataloader)
         for step, batch in enumerate(epoch_iterator):
             model.train()
             inputs = {
@@ -220,12 +224,12 @@ def train(  # noqa C901
                 "attention_mask": batch[1].to(args.device),
                 "labels": batch[3].to(args.device),
             }
-            if args.model_type in ["layoutlm"]:
+            if args.model_type in ["layoutlm", "layoutlmcrf"]:
                 inputs["bbox"] = batch[4].to(args.device)
             inputs["token_type_ids"] = (
-                batch[2].to(args.device) if args.model_type in ["bert", "layoutlm"] else None
+                batch[2].to(args.device) if args.model_type in ["bert", "layoutlm", "layoutlmcrf"] else None
             )  # RoBERTa don"t use segment_ids
-            print("#############################",inputs['input_ids'].size(1))
+            # print("#############################",inputs.keys())
             outputs = model(**inputs)
             # model outputs are always tuple in pytorch-transformers (see doc)
             loss = outputs[0]
@@ -277,6 +281,23 @@ def train(  # noqa C901
                             tb_writer.add_scalar(
                                 "eval_{}".format(key), value, global_step
                             )
+                        print(results)
+                        if results.get('f1',0) > best_f1:
+                            best_f1 = results.get('f1',0)
+                            # Save model checkpoint
+                            output_dir = os.path.join(
+                                args.output_dir, "checkpoint-{}".format(global_step) + "_{}".format(round(best_f1,3))
+                            )
+                            if not os.path.exists(output_dir):
+                                os.makedirs(output_dir)
+                            model_to_save = (
+                                model.module if hasattr(model, "module") else model
+                            )  # Take care of distributed/parallel training
+                            model_to_save.save_pretrained(output_dir)
+                            tokenizer.save_pretrained(output_dir)
+                            torch.save(args, os.path.join(output_dir, "training_args.bin"))
+                            logger.info("Saving model checkpoint to %s", output_dir)
+                            
                     tb_writer.add_scalar("lr", scheduler.get_lr()[0], global_step)
                     tb_writer.add_scalar(
                         "loss",
@@ -284,25 +305,7 @@ def train(  # noqa C901
                         global_step,
                     )
                     logging_loss = tr_loss
-
-                if (
-                    args.local_rank in [-1, 0]
-                    and args.save_steps > 0
-                    and global_step % args.save_steps == 0
-                ):
-                    # Save model checkpoint
-                    output_dir = os.path.join(
-                        args.output_dir, "checkpoint-{}".format(global_step)
-                    )
-                    if not os.path.exists(output_dir):
-                        os.makedirs(output_dir)
-                    model_to_save = (
-                        model.module if hasattr(model, "module") else model
-                    )  # Take care of distributed/parallel training
-                    model_to_save.save_pretrained(output_dir)
-                    tokenizer.save_pretrained(output_dir)
-                    torch.save(args, os.path.join(output_dir, "training_args.bin"))
-                    logger.info("Saving model checkpoint to %s", output_dir)
+                    
 
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
@@ -345,15 +348,15 @@ def evaluate(args, model, tokenizer, labels, pad_token_label_id, mode, prefix=""
                 "attention_mask": batch[1].to(args.device),
                 "labels": batch[3].to(args.device),
             }
-            if args.model_type in ["layoutlm"]:
+            if args.model_type in ["layoutlm", "layoutlmcrf"]:
                 inputs["bbox"] = batch[4].to(args.device)
             inputs["token_type_ids"] = (
                 batch[2].to(args.device)
-                if args.model_type in ["bert", "layoutlm"]
+                if args.model_type in ["bert", "layoutlm", "layoutlmcrf"]
                 else None
             )  # RoBERTa don"t use segment_ids
             
-            print(inputs.keys())
+            # print(inputs.keys())
             outputs = model(**inputs)
             tmp_eval_loss, logits = outputs[:2]
 
@@ -490,20 +493,17 @@ def main():  # noqa C901
 
     labels = get_labels(args.labels)
     num_labels = len(labels)
-    
+    print(num_labels)
+    print(labels)
     configparams['labels'] = labels
     configparams['num_labels'] = num_labels
     # Use cross entropy ignore index as padding label id so that only real label ids contribute to the loss later
     pad_token_label_id = CrossEntropyLoss().ignore_index
     configparams['pad_token_label_id'] = pad_token_label_id
     
-    
-    
-    
     # Load pretrained model and tokenizer
     if args.local_rank not in [-1, 0]:
         torch.distributed.barrier()  # Make sure only the first process in distributed training will download model & vocab
-    
     
     args.model_type = args.model_type.lower()
     config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
@@ -512,6 +512,7 @@ def main():  # noqa C901
         num_labels=num_labels,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
+    print(config)
     tokenizer = tokenizer_class.from_pretrained(
         args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,
         do_lower_case=args.do_lower_case,
@@ -648,8 +649,8 @@ def main():  # noqa C901
                             "Maximum sequence length exceeded: No prediction for '%s'.",
                             line.split()[0],
                         )
-
-    return results
+    print(result)
+    return result
 
 
 if __name__ == "__main__":
