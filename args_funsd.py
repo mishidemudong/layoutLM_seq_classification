@@ -46,7 +46,7 @@ def createparser():
     )
     parser.add_argument(
         "--model_type",
-        default="layoutlm",
+        default="layoutlm",#layoutlm , layoutlmcrf
         type=str,
         # required=True,
         help="Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()),
@@ -61,7 +61,7 @@ def createparser():
     )
     parser.add_argument(
         "--output_dir",
-        default="./model_funsd",
+        default="./model_funsd/checkpoint-1400",
         type=str,
         # required=True,
         help="The output directory where the model predictions and checkpoints will be written.",
@@ -118,8 +118,8 @@ def createparser():
     )
     parser.add_argument(
         "--evaluate_during_training",
-        default=True,
-        # action="store_true",
+        # default=True,
+        action="store_true",
         help="Whether to run evaluation during training at each logging step.",
     )
     parser.add_argument(
@@ -131,7 +131,7 @@ def createparser():
 
     parser.add_argument(
         "--per_gpu_train_batch_size",
-        default=6,
+        default=8,
         type=int,
         help="Batch size per GPU/CPU for training.",
     )
