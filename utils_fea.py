@@ -137,98 +137,73 @@ def read_examples_from_file(data_dir, mode):
             )
     return examples
 
-def read_examples_from_pdf(data_dir, mode):
-    file_path = os.path.join(data_dir, "{}.xlsx".format(mode))
-    box_file_path = os.path.join(data_dir, "{}_box.txt".format(mode))
-    image_file_path = os.path.join(data_dir, "{}_image.txt".format(mode))
-    guid_index = 1
+
+
+def trans2examples(excel_data, excel_name):
+    
+    def bbox_trans_func(box, width, length, num=1000):
+        return [
+            int(num * (box[0] / width)),
+            int(num * (box[1] / length)),
+            int(num * (box[2] / width)),
+            int(num * (box[3] / length)),
+        ]
+
     examples = []
-    with open(file_path, encoding="utf-8") as f, open(
-        box_file_path, encoding="utf-8"
-    ) as fb, open(image_file_path, encoding="utf-8") as fi:
-        words = []
+    
+    for sheet_id in excel_data.sheets:
+        df = pd.read_excel(excel_data, sheet_name=str(sheet_id))
+        words = df['token']
         boxes = []
         actual_bboxes = []
-        file_name = None
-        page_size = None
-        labels = []
-        for line, bline, iline in zip(f, fb, fi):
-            if line.startswith("-DOCSTART-") or line == "" or line == "\n":
-                if words:
-                    examples.append(
-                        InputExample(
-                            guid="{}-{}".format(mode, guid_index),
-                            words=words,
-                            labels=labels,
-                            boxes=boxes,
-                            actual_bboxes=actual_bboxes,
-                            file_name=file_name,
-                            page_size=page_size,
-                        )
-                    )
-                    guid_index += 1
-                    words = []
-                    boxes = []
-                    actual_bboxes = []
-                    file_name = None
-                    page_size = None
-                    labels = []
-            else:
-                splits = line.split("\t")
-                bsplits = bline.split("\t")
-                isplits = iline.split("\t")
-                # print(isplits)
-                # print(len(isplits))
-                assert len(splits) == 2
-                assert len(bsplits) == 2
-                assert len(isplits) == 4
-                assert splits[0] == bsplits[0]
-                words.append(splits[0])
-                if len(splits) > 1:
-                    labels.append(splits[-1].replace("\n", ""))
-                    box = bsplits[-1].replace("\n", "")
-                    box = [int(b) for b in box.split()]
-                    boxes.append(box)
-                    actual_bbox = [int(b) for b in isplits[1].split()]
-                    actual_bboxes.append(actual_bbox)
-                    page_size = [int(i) for i in isplits[2].split()]
-                    file_name = isplits[3].strip()
-                else:
-                    # Examples could have no label for mode = "test"
-                    labels.append("O")
-        if words:
-            examples.append(
-                InputExample(
-                    guid="%s-%d".format(mode, guid_index),
-                    words=words,
-                    labels=labels,
-                    boxes=boxes,
-                    actual_bboxes=actual_bboxes,
-                    file_name=file_name,
-                    page_size=page_size,
-                )
+        labels = ["O"] * len(df['token'])
+        
+        file_name = excel_name + "_{}".format(str(sheet_id))
+        page_size = [df['width'],df['height']]        
+        
+        for index,item in df.iterows():
+            actual_bbox = [item['x0'],item['y0'],item['x1'],item['y1']]
+            box = bbox_trans_func(actual_bbox,item['width'], item['height'])
+            
+            boxes.append(box)
+            actual_bboxes.append(actual_bbox)  
+            
+        assert len(words) == len(boxes)
+        assert len(words) == len(actual_bboxes)
+        assert len(words) == len(labels)
+        
+        examples.append(
+            InputExample(
+                guid="%s-%d".format("pred", sheet_id+1),
+                words=words,
+                labels=labels,
+                boxes=boxes,
+                actual_bboxes=actual_bboxes,
+                file_name=file_name,
+                page_size=page_size,
             )
+        )
     return examples
 
 def convert_examples_to_features(
-    examples,
-    label_list,
-    max_seq_length,
-    tokenizer,
-    cls_token_at_end=False,
-    cls_token="[CLS]",
-    cls_token_segment_id=1,
-    sep_token="[SEP]",
-    sep_token_extra=False,
-    pad_on_left=False,
-    pad_token=0,
-    cls_token_box=[0, 0, 0, 0],
-    sep_token_box=[1000, 1000, 1000, 1000],
-    pad_token_box=[0, 0, 0, 0],
-    pad_token_segment_id=0,
-    pad_token_label_id=-1,
-    sequence_a_segment_id=0,
-    mask_padding_with_zero=True,
+                                    examples,
+                                    label_list,
+                                    max_seq_length,
+                                    tokenizer,
+                                    cls_token_at_end=False,
+                                    cls_token="[CLS]",
+                                    cls_token_segment_id=1,
+                                    sep_token="[SEP]",
+                                    sep_token_extra=False,
+                                    pad_on_left=False,
+                                    pad_token=0,
+                                    cls_token_box=[0, 0, 0, 0],
+                                    sep_token_box=[1000, 1000, 1000, 1000],
+                                    pad_token_box=[0, 0, 0, 0],
+                                    pad_token_segment_id=0,
+                                    pad_token_label_id=-1,
+                                    sequence_a_segment_id=0,
+                                    mask_padding_with_zero=True,
 ):
     """ Loads a data file into a list of `InputBatch`s
         `cls_token_at_end` define the location of the CLS token:
@@ -410,15 +385,7 @@ page_seg = "############"
 def parsepdf4predict(pdf_file):
     # pdf_files = list(os.listdir(data_dir))#[:10]
     # pdf_files = [t for t in pdf_files if t.endswith('.pdf')]
-    
-    token_array = []
-    x0_array = []
-    y0_array = []
-    x1_array = []
-    y1_array = []
-    w_array = []
-    h_array = []
-
+        
     xlsx = pd.ExcelWriter(pdf_file.replace('.pdf','.xlsx'))
     
     pdf = pdfplumber.open(pdf_file)
@@ -426,6 +393,13 @@ def parsepdf4predict(pdf_file):
     for page_id in tqdm(range(len(pdf.pages))):
 
         this_page = pdf.pages[page_id]
+        token_array = []
+        x0_array = []
+        y0_array = []
+        x1_array = []
+        y1_array = []
+        w_array = []
+        h_array = []
     
         words = this_page.extract_words(x_tolerance=1.5)
     
@@ -475,17 +449,10 @@ def parsepdf4predict(pdf_file):
         union_array = list(zip(token_array,x0_array,y0_array,x1_array,y1_array,w_array,h_array))     
         pagedf = pd.DataFrame(union_array,columns=['token','x0','y0','x1','y1','width' , 'height'])
         
-        pagedf.to_excel(xlsx, sheet_name=page_id, index=False)
+        pagedf.to_excel(xlsx, sheet_name=str(page_id), index=False)
             
-        token_array.append(page_seg)
-        x0_array.append(page_seg)
-        y0_array.append(page_seg)
-        x1_array.append(page_seg)
-        y1_array.append(page_seg)
-        w_array.append(page_seg)
-        h_array.append(page_seg)
            
-    return xlsx, (token_array,x0_array,y0_array,x1_array,y1_array,w_array,h_array)
+    return xlsx
         
         
 def write2txt(output_dir,txtdata):

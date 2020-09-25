@@ -16,13 +16,15 @@ import numpy as np
 
 import torch
 from torch.utils.data import Dataset, SequentialSampler
-from utils_fea import read_examples_from_file, convert_examples_to_features, parsepdf4predict, write2txt
+from utils_fea import trans2examples, convert_examples_to_features, parsepdf4predict, write2txt
 
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"                                                                             
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 class pdfPredDataset(Dataset):
-    def __init__(self, args, tokenizer,data_dir):
+    def __init__(self, args, tokenizer, examples):
 
-        examples = read_examples_from_file(data_dir, 'test')
         features = convert_examples_to_features(
             examples,
             args.labels,
@@ -92,24 +94,25 @@ class TablePredictHandler():
     def predict(self, pdf_file):
         
         #step1 parse pdf data for predict
-        xlsxdf, txtdata = parsepdf4predict(pdf_file)
-        write2txt(self.model_save_path, txtdata)
+        xlsxdf = parsepdf4predict(pdf_file)
         
-        eval_dataset = pdfPredDataset(self.config, self.tokenizer, self.model_save_path)
-        eval_dataloader = DataLoader(
-                                        eval_dataset,
-                                        batch_size=8,
+        # write2txt(self.model_save_path, txtdata)
+        pred_examples = trans2examples(xlsxdf)
+        pred_dataset = pdfPredDataset(self.config, self.tokenizer, pred_examples)
+        pred_dataloader = DataLoader(
+                                        pred_dataset,
+                                        batch_size=1,
                                     )
         
         print("***** Running evaluation %s *****", 'test')
-        print("  Num examples = %d", len(eval_dataset))
-        print("  Batch size = %d", 8)
+        print("  Num examples = %d", len(pred_dataset))
+        print("  Batch size = %d", 1)
 
         preds = None
         # device = torch.device('cuda')
         # self.model.to(device)
         # self.model.eval()
-        for batch in tqdm(eval_dataloader, desc="Evaluating"):
+        for batch in tqdm(pred_dataloader, desc="Predict"):
             # print(batch)
             with torch.no_grad():
                 inputs = {
@@ -121,14 +124,20 @@ class TablePredictHandler():
                 # dict_keys(['input_ids', 'attention_mask', 'labels', 'bbox', 'token_type_ids'])
                 outputs = self.model(**inputs)
                 logits = outputs[0]
+                
+            if self.config.decoder == 'crf':
+                logits = logits.sequeeze(0)
     
             if preds is None:
                 preds = logits.detach().cpu().numpy()
             else:
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
                 
-        preds = np.argmax(preds, axis=2)
-    
+        if self.config.decoder == 'softmax':
+            preds = np.argmax(preds, axis=2)
+        elif self.config.decoder == 'crf':
+            preds = preds.tolist()
+            
         label_map = {i: label for i, label in enumerate(self.config.labels)}
     
         preds_list = [[] for _ in range(preds.shape[0])]
@@ -137,8 +146,8 @@ class TablePredictHandler():
             for j in range(preds.shape[1]):
                 if preds[i, j] != self.config.pad_token_label_id:
                     preds_list[i].append(label_map[preds[i][j]])
-        xlsxdf['pred_label'] = preds_list
-        return xlsxdf
+
+        return xlsxdf, preds_list
 
 
 
@@ -146,5 +155,7 @@ if __name__ == '__main__':
     madel_save_path = "./model_funsd"
     data_dir = "./data"
     ta_extractor = TablePredictHandler(madel_save_path)
-    res = ta_extractor.predict(data_dir)
-    print(res)
+    xlsxdf, preds_list = ta_extractor.predict(data_dir)
+    
+    
+    print(xlsxdf)
