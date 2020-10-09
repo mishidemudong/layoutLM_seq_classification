@@ -50,6 +50,7 @@ from transformers import (
 )
 
 from layoutlm import FunsdDataset, LayoutlmConfig, LayoutlmForTokenClassification
+from layoutlm.data.funsd import read_examples_from_file
 from layoutlm_crf import LayoutlmForCRF
 # from args import createparser
 from args_funsd import createparser
@@ -406,14 +407,21 @@ def evaluate(args, model, tokenizer, labels, pad_token_label_id, mode, prefix=""
 
     return results, preds_list
 
-def load_tokenizer(args, ADDITIONAL_SPECIAL_TOKENS):
+def add_special_tokens_tokenizer(tokenizer, args):
     '''
     ADDITIONAL_SPECIAL_TOKENS : []
     '''
-    if args.model_type in ["albert", "roberta"]:
-        tokenizer = BertTokenizer.from_pretrained(args.model_name_or_path)
-        return tokenizer
-    tokenizer = MODEL_CLASSES[args.model_type][1].from_pretrained(args.model_name_or_path)
+    
+    train_data = read_examples_from_file(args.data_dir, 'train')
+    dev_data = read_examples_from_file(args.data_dir, 'dev')
+    
+    vocab = set()
+    for item in tqdm(train_data + dev_data):
+        word_tokens = tokenizer.tokenize(item.words)
+        if len(word_tokens) > 1:
+            vocab.add(item.words.lower())
+        
+    ADDITIONAL_SPECIAL_TOKENS = list(vocab)
     tokenizer.add_special_tokens({"additional_special_tokens": ADDITIONAL_SPECIAL_TOKENS})
     return tokenizer
 
